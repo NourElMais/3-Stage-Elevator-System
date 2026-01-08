@@ -1,0 +1,515 @@
+;*****************************************************************
+;*  Elevator Final Project – Double & Single Destination Mode    *
+;*****************************************************************
+
+            XDEF Entry, _Startup
+            ABSENTRY Entry
+
+            INCLUDE 'derivative.inc'
+
+ROMStart    EQU  $4000
+
+;=================================================================
+; Variables
+;=================================================================
+            ORG   RAMStart
+            
+            
+UP_LCD          DC.B 'MOVING UP'
+DOWN_LCD        DC.B 'MOVING DOWN'
+SIZE_DOWN       DC.B  11
+SIZE_UP         DC.B  9
+CURRENT_POS:    DC.B  0        ; current floor (0–2)
+DEST_POS:       DC.B  $FF      ; single destination
+DEST_POS1:      DC.B  $FF     ; multi-request primary
+DEST_POS2:      DC.B  $FF      ; multi-request secondary
+COUNTER         DC.B  4
+FLOOR_REQUEST   DC.B  0
+WEIGHT_THR:     DC.B  140      ; weight threshold
+MULTIFLG        DC.B 0
+BEEPCOUNT       DC.B 6
+;=================================================================
+; Code
+;=================================================================
+            ORG   ROMStart
+
+Entry:
+_Startup:
+            LDS   #RAMEnd+1
+
+;=============================================================
+; Configuration
+;=============================================================
+            CLI
+
+            CLR   DDRA                  ; PA2–PA7 inputs
+            MOVB  #%11100000, DDRT      ; PT7/PT6/PT5 outputs
+            MOVB  #$C7, MCCTL
+            MOVW  #62500, MCCNT
+            
+            MOVB  #%11000000, ATD0CTL2
+            MOVB  #%00001000, ATD0CTL3
+            MOVB  #%10000000, ATD0CTL4
+            MOVB  #%10100101, ATD0CTL5
+
+            
+            ;initialization for LCD
+            MOVB #$10, MODRR 
+            MOVB #$38, DDRM 
+            MOVB #$52, SPI0CR1 
+            MOVB #$10, SPI0CR2 
+            MOVB #$00, SPI0BR
+
+            LDAA #%00110011
+            JSR SENDINST
+            LDAA #%00110010
+            JSR SENDINST
+            LDAA #%00101000
+            JSR SENDINST
+            LDAA #%00001000
+            JSR SENDINST
+            LDAA #%00000001
+            JSR SENDINST
+            LDAA #%00000110
+            JSR SENDINST
+            LDAA #%00001110
+            JSR SENDINST
+
+
+
+
+;=============================================================
+; COMPARE ? decide movement or idle
+;=============================================================
+COMPARE:
+            JSR   WEIGHT_BLOCK
+            LDAA  FLOOR_REQUEST
+
+           
+            CMPA #1
+            LBEQ  single_mode
+            CMPA #2
+            LBEQ single_mode
+            CMPA #4
+            LBEQ single_mode  
+                
+; ---- 0 & 1 -> 3 ----
+            CMPA  #3
+            LBNE  chk02
+
+            MOVB #$FF,DEST_POS
+
+
+            LDAA  CURRENT_POS
+            CMPA  #0
+            LBNE  f01_not0
+
+            LDAA  #0
+            STAA  DEST_POS1
+            LDAA  #1
+            STAA  DEST_POS2
+            LBRA  finish_decode
+
+f01_not0:
+            LDAA  #1
+            STAA  DEST_POS1
+            LDAA  #0
+            STAA  DEST_POS2
+            LBRA  finish_decode
+
+
+; ---- 0 & 2 -> 5 ----
+chk02:
+            CMPA  #5
+            LBNE  chk12
+
+            LDAA  #$FF
+            STAA  DEST_POS
+
+            LDAA  CURRENT_POS
+            CMPA  #02
+            LBEQ  f02_not0
+
+            LDAA  #0
+            STAA  DEST_POS1
+            LDAA  #2
+            STAA  DEST_POS2
+            LBRA  finish_decode
+
+f02_not0:
+            LDAA  #2
+            STAA  DEST_POS1
+            LDAA  #0
+            STAA  DEST_POS2
+            LBRA  finish_decode
+
+
+; ---- 1 & 2 -> 6 ----
+chk12:
+            CMPA  #6
+            LBNE COMPARE
+
+            LDAA  #$FF
+            STAA  DEST_POS
+
+            LDAA  CURRENT_POS
+            CMPA  #2
+            LBEQ  f12_at2
+
+            LDAA  #1
+            STAA  DEST_POS1
+            LDAA  #2
+            STAA  DEST_POS2
+            LBRA  finish_decode
+
+f12_at2:
+            LDAA  #2
+            STAA  DEST_POS1
+            LDAA  #1
+            STAA  DEST_POS2
+            LBRA  finish_decode
+
+
+
+
+finish_decode:
+            CLR   FLOOR_REQUEST
+            
+
+;------ MULTI MODE ------
+     	      MOVB  #$FF,MULTIFLG
+            LDAA  CURRENT_POS
+            CMPA  DEST_POS1
+            LBEQ  arrived_multi
+
+            LBHI   MOVE_DOWN
+            LBLO   MOVE_UP
+
+arrived_multi:
+            JSR   LCD_PRINT_FLOOR
+             
+            JSR   IDLE_STATE
+            LDAA  DEST_POS2
+            STAA  DEST_POS1
+            LDAA  #$FF
+            STAA  DEST_POS2
+	          LDAB  DEST_POS1
+	          CMPB  #$FF
+            LBEQ COMPARE
+            LBNE finish_decode
+;------ SINGLE MODE ------
+single_mode:
+	    CLR MULTIFLG
+            MOVB #$FF, DEST_POS1
+            MOVB #$FF, DEST_POS2
+            LDAA  DEST_POS
+            CMPA  #$FF
+            LBEQ  no_dest
+
+            LDAA  CURRENT_POS
+            CMPA  DEST_POS
+            LBEQ  arrived_single
+
+            BHI   MOVE_DOWN
+            BLO   MOVE_UP
+
+arrived_single:
+            JSR   LCD_PRINT_FLOOR 
+            JSR   IDLE_STATE
+            LDAA  #$FF
+            STAA  DEST_POS
+	    CLR FLOOR_REQUEST
+no_dest:
+            LBRA COMPARE
+
+
+;=============================================================
+; MOVE UP / MOVE DOWN
+;=============================================================
+MOVE_UP:
+            LDX #UP_LCD
+            LDAA #%10000000
+            JSR SENDINST
+REDO
+            LDAA 1,X+
+            JSR SENDDATA
+            DEC  SIZE_UP
+            BEQ  DONE_UP
+            LDAB SIZE_UP 
+            CMPB #2
+            BEQ GOTOLINE2_UP
+            BNE REDO
+            
+GOTOLINE2_UP
+            LDAA #%11000010
+            JSR SENDINST
+            BRA REDO
+            
+DONE_UP
+           MOVB #9, SIZE_UP 
+           
+            
+            BSET  PTT, #%10000000
+            LDX   #24
+up_loop:
+            JSR   DELAY
+            LDAA  PTT
+            EORA  #%10000000
+            STAA  PTT
+            DEX
+            BNE   up_loop
+            BCLR  PTT, #%10000000
+            INC   CURRENT_POS
+	    TST  MULTIFLG
+            LBEQ COMPARE
+	    LBNE finish_decode
+
+MOVE_DOWN:
+            LDX  #DOWN_LCD
+            LDAA #%10000000
+            JSR SENDINST
+           
+REDO2
+            LDAA 1,X+
+            JSR SENDDATA
+            DEC  SIZE_DOWN
+            BEQ  DONE_DOWN
+            LDAB SIZE_DOWN 
+            CMPB #4
+            BEQ GOTOLINE2_DOWN
+            BNE REDO2
+            
+GOTOLINE2_DOWN
+            LDAA #%11000010
+            JSR SENDINST
+            BRA REDO2
+            
+DONE_DOWN
+            MOVB #11, SIZE_DOWN 
+            
+            
+            BSET  PTT, #%01000000
+            LDX   #24
+down_loop:
+            JSR   DELAY
+            LDAA  PTT
+            EORA  #%01000000
+            STAA  PTT
+            DEX
+            BNE   down_loop
+            BCLR  PTT, #%01000000
+            DEC   CURRENT_POS
+            TST  MULTIFLG
+            LBEQ COMPARE
+	          LBNE finish_decode
+
+
+;=============================================================
+; IDLE_STATE ? beep + open door (red blink) + recheck weight
+;=============================================================
+IDLE_STATE:
+            MOVB  #%00010000, PWME
+            MOVB  #250, PWMPER4
+            MOVB  #125, PWMDTY4
+
+            JSR   DELAY
+            DEC BEEPCOUNT 
+            BNE IDLE_STATE
+            MOVB #6,BEEPCOUNT
+            
+            MOVB  #%00000000, PWME
+
+            LDX   #24
+door_loop:
+            LDAA  PTT
+            EORA  #%00100000
+            STAA  PTT
+            JSR   DELAY
+            DEX
+            BNE   door_loop
+            BCLR  PTT, #%00100000
+
+    
+            RTS
+
+;=============================================================
+; DELAY (~250ms)
+;=============================================================
+DELAY:
+            LDY   #26315
+dloop:
+            PSHB
+            PULB
+            PSHB
+            PULB
+            PSHB
+            PULB
+            DEY
+            BNE   dloop
+            RTS
+;=============================================================
+; Interrupt SUBROUTINE
+;=============================================================            
+            
+MyISR      MOVB  #$80, MCFLG
+           MOVW  #62500, MCCNT
+           DEC COUNTER
+           BNE OUT
+           MOVB  #$4,COUNTER          
+
+           BRSET PORTA,#%00000100, STEP1
+           BSET FLOOR_REQUEST, #$01
+           CLR DEST_POS
+STEP1      BRSET PORTA,#%00001000, STEP2
+           BSET FLOOR_REQUEST, #$02
+           MOVB #1,DEST_POS
+STEP2      BRSET PORTA,#%00010000, STEP3
+           BSET FLOOR_REQUEST, #$04
+           MOVB #2,DEST_POS
+STEP3      BRSET PORTA,#%00100000, STEP4
+           BSET FLOOR_REQUEST, #$01  
+           CLR DEST_POS                    
+STEP4      BRSET PORTA,#%01000000, STEP5
+           BSET FLOOR_REQUEST, #$02 
+           MOVB #1,DEST_POS   
+STEP5      BRSET PORTA,#%10000000, OUT
+           BSET FLOOR_REQUEST, #$04
+           MOVB #2,DEST_POS   
+OUT        RTI
+
+;=============================================================
+; WEIGHT_BLOCK
+;=============================================================
+WEIGHT_BLOCK:
+wcheck:
+            JSR   READ_WEIGHT
+            CMPA  WEIGHT_THR
+            BLO   w_ok
+
+            MOVB  #%00010000, PWME
+            MOVB  #250, PWMPER4
+            MOVB  #125, PWMDTY4
+
+            LDAA  PTT
+            EORA  #%00100000
+            STAA  PTT
+
+            JSR   DELAY
+            LBRA  wcheck
+
+w_ok:
+            MOVB  #%00000000, PWME
+            BCLR  PTT, #%00100000
+            RTS
+
+
+;=============================================================
+; READ_WEIGHT
+;=============================================================
+READ_WEIGHT:
+            BRCLR ATD0STAT0, #$80, READ_WEIGHT
+            LDAA  ATD0DR0L
+            RTS
+
+
+;LCD SUBROUTINES
+LCD_PRINT_FLOOR:
+            ; Clear display
+            LDAA  #%00000001      
+            JSR   SENDINST
+
+            ; Cursor line 1, position 0
+            LDAA  #%10000000
+            JSR   SENDINST
+
+            ; Print 'F'
+            LDAA  #'F'
+            JSR   SENDDATA
+
+            ; Decide which digit to print
+            LDAA  CURRENT_POS
+            CMPA  #0
+            BEQ   floor0
+            CMPA  #1
+            BEQ   floor1
+            ; else it is 2
+            LDAA  #'2'
+            BRA   send_digit
+
+floor0:     LDAA  #'0'
+            BRA   send_digit
+
+floor1:     LDAA  #'1'
+            
+send_digit:
+            JSR   SENDDATA
+            RTS
+            
+            
+SENDINST    TAB
+            RORA
+            RORA
+            RORA
+            RORA
+            ORAA #%10000000
+            ANDA #%10001111
+            JSR SENDSPI
+            ANDA #%00001111
+            JSR SENDSPI
+            JSR DELAY2
+
+            TBA
+            ORAA #%10000000
+            ANDA #%10001111
+            JSR SENDSPI
+            ANDA #%00001111
+            JSR SENDSPI
+            JSR DELAY2
+            RTS
+
+SENDDATA    TAB
+            RORA
+            RORA
+            RORA
+            RORA
+            ORAA #%11000000
+            ANDA #%11001111
+            JSR SENDSPI
+            ANDA #%01001111
+            JSR SENDSPI
+            JSR DELAY2
+
+            TBA
+            ORAA #%11000000
+            ANDA #%11001111
+            JSR SENDSPI
+            ANDA #%01001111
+            JSR SENDSPI
+            JSR DELAY2
+            RTS
+
+SENDSPI     BRCLR SPI0SR,#$20,*
+            STAA SPI0DR
+            RTS
+
+DELAY2      LDY #10526
+again       PSHB
+            PULB
+            PSHB
+            PULB
+            PSHB
+            PULB
+            DEY
+            BNE again
+            RTS
+
+FINISH
+;=============================================================
+; Interrupt Vectors
+;=============================================================
+            ORG   $FFCA
+            DC.W  MyISR
+ 
+
+            ORG   $FFFE
+            DC.W  Entry
